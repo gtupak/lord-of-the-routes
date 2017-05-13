@@ -36,7 +36,7 @@ Shortest path to node C: the next hop is B and the cost is 11.5
 import sys
 from socket import *
 import threading
-
+import datetime as time
 
 art = \
 " ___________________        ____....-----....____\n\
@@ -68,6 +68,11 @@ Dictionary holding the distance vectors table.
 '''
 distance_vectors = {}
 
+# Hash of distance vectors dict to allow difference checking
+dv_hash = 0
+# time since last distance vectors dict change
+dv_timeLastChanged = None
+
 
 def send_msg_to_node(nID, msg):
     nPort = neighbours[nID]['port']
@@ -82,6 +87,7 @@ def broadcast_to_neighbours(msg):
 
 
 def initialize_dv():
+    global dv_hash, dv_timeLastChanged
     print 'Initializing distance vectors.'
     for to_nID in discoveredNodes:
         distance_vectors[to_nID] = {}
@@ -90,6 +96,9 @@ def initialize_dv():
 
     for nID in neighbours:
         distance_vectors[nID][nID] = neighbours[nID]['weight']
+
+    dv_hash = hash(repr(distance_vectors))
+    dv_timeLastChanged = time.datetime.now()
 
 
 def print_shortest_path():
@@ -130,6 +139,8 @@ def send_DV():
 
 
 def updateDV(from_nID, newDistVector):
+    global dv_hash, dv_timeLastChanged
+
     costToVia_fromNode = distance_vectors[from_nID][from_nID] # cost to fromNode via fromNode
     for to_nID in newDistVector:
         if to_nID == NODE_ID:
@@ -147,8 +158,17 @@ def updateDV(from_nID, newDistVector):
 
         distance_vectors[to_nID][from_nID] = min(myToCost, toCost + costToVia_fromNode)
 
-    print '>>> DV updated!'
-    print_shortest_path()
+    dv_newHash = hash(repr(distance_vectors))
+    now = time.datetime.now()
+    if dv_newHash != dv_hash:
+        dv_hash = dv_newHash
+        dv_timeLastChanged = now
+        print '>>> DV updated!'
+    else:
+        timeElapsed = now - dv_timeLastChanged
+        if timeElapsed.seconds > STABILIZATION_TIME:
+            print '>>> Distance vectors stabilized!'
+            print_shortest_path()
 
 
 def heartbeat():
@@ -211,8 +231,9 @@ if __name__ == '__main__':
         NODE_WEIGHT = int(config_file_lines[0])
 
         # Other configurations
-        HEARTBEAT_TIME = 1  # heartbeat every second
-        DV_UPDATE_TIME = 5  # send DV update every 5 seconds
+        HEARTBEAT_TIME = 1      # heartbeat every second
+        DV_UPDATE_TIME = 5      # send DV update every 5 seconds
+        STABILIZATION_TIME = 20 # if DV table didn't change after 20s, then assume stabilization
         SERVER_NAME = 'localhost'
 
         print art % NODE_ID
