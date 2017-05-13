@@ -55,6 +55,9 @@ Dictionary to store the neighbors of this node and their properties.
 '''
 neighbours = {}
 
+# List of nodes discovered so far
+discoveredNodes = []
+
 '''
 Dictionary holding the distance vectors table. 
 {
@@ -80,9 +83,26 @@ def broadcast_to_neighbours(msg):
 
 def initialize_dv():
     print 'Initializing distance vectors.'
-    for nID in neighbours:
-        distance_vectors[nID] = {nID: neighbours[nID]['weight']}
+    for to_nID in discoveredNodes:
+        distance_vectors[to_nID] = {}
+        for via_nID in discoveredNodes:
+            distance_vectors[to_nID][via_nID] = float('inf')
 
+    for nID in neighbours:
+        distance_vectors[nID][nID] = neighbours[nID]['weight']
+
+
+def print_shortest_path():
+    for nID in discoveredNodes:
+        msg = 'shortest path to node %s:' % nID
+        nextHop = ''
+        cost = float('inf')
+        for via_nID in distance_vectors[nID]:
+            viaCost = distance_vectors[nID][via_nID]
+            if viaCost < cost:
+                nextHop = via_nID
+                cost = viaCost
+        print '%s the next hop is %s and the cost is %d' % (msg, nextHop, cost)
 
 
 def send_DV():
@@ -106,17 +126,36 @@ def send_DV():
     # broadcast new DV
     broadcast_to_neighbours(msg)
 
+    print 'DV sent: ' + msg
+
+
+def updateDV(from_nID, newDistVector):
+    costToVia_fromNode = distance_vectors[from_nID][from_nID] # cost to fromNode via fromNode
+    for to_nID in newDistVector:
+        if to_nID == NODE_ID:
+            continue
+
+        if to_nID not in distance_vectors:              # toNode not yet discovered; initialize weights
+            distance_vectors[to_nID] = {}
+            discoveredNodes.append(to_nID)
+
+            for via_nID in discoveredNodes:
+                distance_vectors[to_nID][via_nID] = float('inf')
+
+        toCost = newDistVector[to_nID]                  # cost of from_nID to to_nID
+        myToCost = distance_vectors[to_nID][from_nID]   # cost current node to
+
+        distance_vectors[to_nID][from_nID] = min(myToCost, toCost + costToVia_fromNode)
+
+    print '>>> DV updated!'
+    print_shortest_path()
+
 
 def heartbeat():
     threading.Timer(HEARTBEAT_TIME, heartbeat).start()
     for nID in neighbours:
         msg = 'H %s beat' % NODE_ID
         send_msg_to_node(nID, msg)
-        # nPort = neighbours[nID]['port']
-        # nSocket = socket(AF_INET, SOCK_DGRAM)
-        # heartbeatMsg = '%s beat' % NODE_ID
-        # nSocket.sendto(heartbeatMsg, (SERVER_NAME, nPort))
-        # nSocket.close()
 
 
 def listen_incoming_messages():
@@ -127,9 +166,18 @@ def listen_incoming_messages():
         msg, _ = nListener.recvfrom(2048)
         msgType = msg.split()[0]
         if msgType == 'H':
-            print msg #TODO
+            continue #TODO
         elif msgType == 'DV':
-            print 'received "%s"' % msg #TODO
+            dv = {}
+            msg = msg.split()
+            nFrom = msg[1]
+            i = 2
+            while i < len(msg):
+                to_nID = msg[i]
+                costTo_nID = int(msg[i+1])
+                dv[to_nID] = costTo_nID
+                i += 2
+            updateDV(nFrom, dv)
 
 
 if __name__ == '__main__':
@@ -152,11 +200,13 @@ if __name__ == '__main__':
         for i in range(1, len(config_file_lines)):
             line = config_file_lines[i]
             line = line.split()
-            neighbourId = line[0]
+            neighbourID = line[0]
             neighbourWeight = int(line[1])
             neighbourPort = int(line[2])
             neighbour = {'weight': neighbourWeight, 'port': neighbourPort}
-            neighbours[neighbourId] = neighbour
+            neighbours[neighbourID] = neighbour
+
+            discoveredNodes.append(neighbourID)
 
         NODE_WEIGHT = int(config_file_lines[0])
 
@@ -165,9 +215,7 @@ if __name__ == '__main__':
         DV_UPDATE_TIME = 5  # send DV update every 5 seconds
         SERVER_NAME = 'localhost'
 
-        # print 'Router %s started '
-        # print art % NODE_ID
-
+        print art % NODE_ID
         initialize_dv()
 
         listener_thread = threading.Thread(target=listen_incoming_messages)
