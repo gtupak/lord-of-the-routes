@@ -37,31 +37,100 @@ import sys
 from socket import *
 import threading
 
+
+art = \
+" ___________________        ____....-----....____\n\
+(__Node %s started__)   ==============================\n\
+    ______\\   \\_______.--'.  `---..._____...---'\n\
+    `-------..__            ` ,/\n\
+                `-._ -  -  - |\n\
+                    `-------'"
+
 '''
-Dictionary to store the neighbors and their properties.
+Dictionary to store the neighbors of this node and their properties.
 {   
-    'A': {'cost': 21, 'port': 2001},
+    'B': {'weight': 21, 'port': 2001},
     ...
 }
 '''
 neighbours = {}
 
+'''
+Dictionary holding the distance vectors table. 
+{
+    <to_node>: {<via_node1>: <cost2>, <via_node2>: <cost2>},
+    'B': {'B': 5, 'C': 7, 'D': 10},
+    ...
+}
+'''
+distance_vectors = {}
+
+
+def send_msg_to_node(nID, msg):
+    nPort = neighbours[nID]['port']
+    nSocket = socket(AF_INET, SOCK_DGRAM)
+    nSocket.sendto(msg, (SERVER_NAME, nPort))
+    nSocket.close()
+
+
+def broadcast_to_neighbours(msg):
+    for nID in neighbours:
+        send_msg_to_node(nID, msg)
+
+
+def initialize_dv():
+    print 'Initializing distance vectors.'
+    for nID in neighbours:
+        distance_vectors[nID] = {nID: neighbours[nID]['weight']}
+
+
+
+def send_DV():
+    threading.Timer(DV_UPDATE_TIME, send_DV).start()
+    vectorToSend = {}
+    msg = 'DV %s' % NODE_ID
+
+    for to_nID in distance_vectors:
+        minWeight = float('inf')
+        viaWeights = distance_vectors[to_nID]
+
+        for via_nID in viaWeights:
+            minWeight = min(minWeight, viaWeights[via_nID])
+
+        vectorToSend[to_nID] = minWeight
+
+    # craft msg
+    for to_nID in vectorToSend:
+        msg += ' %s %d' % (to_nID, vectorToSend[to_nID])
+
+    # broadcast new DV
+    broadcast_to_neighbours(msg)
+
+
 def heartbeat():
     threading.Timer(HEARTBEAT_TIME, heartbeat).start()
     for nID in neighbours:
-        nPort = neighbours[nID]['port']
-        nSocket = socket(AF_INET, SOCK_DGRAM)
-        heartbeatMsg = '%s beat' % NODE_ID
-        nSocket.sendto(heartbeatMsg, (SERVER_NAME, nPort))
-        nSocket.close()
+        msg = 'H %s beat' % NODE_ID
+        send_msg_to_node(nID, msg)
+        # nPort = neighbours[nID]['port']
+        # nSocket = socket(AF_INET, SOCK_DGRAM)
+        # heartbeatMsg = '%s beat' % NODE_ID
+        # nSocket.sendto(heartbeatMsg, (SERVER_NAME, nPort))
+        # nSocket.close()
+
 
 def listen_incoming_messages():
     nListener = socket(AF_INET, SOCK_DGRAM)
     nListener.bind(('', NODE_PORT))
-    print '%s: Listener initialized.' % NODE_ID
+    print 'Listener initialized.'
     while 1:
         msg, _ = nListener.recvfrom(2048)
-        print msg
+        msgType = msg.split()[0]
+        if msgType == 'H':
+            print msg #TODO
+        elif msgType == 'DV':
+            print 'received "%s"' % msg #TODO
+
 
 if __name__ == '__main__':
     cmdArgs = sys.argv
@@ -96,6 +165,13 @@ if __name__ == '__main__':
         DV_UPDATE_TIME = 5  # send DV update every 5 seconds
         SERVER_NAME = 'localhost'
 
-        heartbeat()
+        # print 'Router %s started '
+        # print art % NODE_ID
+
+        initialize_dv()
+
         listener_thread = threading.Thread(target=listen_incoming_messages)
         listener_thread.start()
+
+        heartbeat() # start heartbeat
+        send_DV() # start distance vector broadcasting
