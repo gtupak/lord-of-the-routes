@@ -48,8 +48,9 @@ art = \
 
 '''
 Dictionary to store the neighbors of this node and their properties.
+The key 'changeWeight' exists only if poisoned reverse is enabled.
 {   
-    'B': {'weight': 21, 'port': 2001, 'lastHeartbeat': <timeObject>},
+    'B': {'weight': 21, 'port': 2001, 'changeWeight': 50, 'lastHeartbeat': <timeObject>},
     ...
 }
 '''
@@ -75,6 +76,13 @@ dv_timeLastChanged = time.datetime.now()
 
 # True if DV has stabilized
 stabilized = False
+
+# True if weights have already been changed
+weights_changed = False
+
+# List of nodes that have changed weights and their remaining checks. Ie. if node has 2 neighbours, there are 2 checks
+# The checks is to handle the problem of weight updates that are not at the same time.
+changed_nodes = {}
 
 
 def send_msg_to_node(node, msg):
@@ -195,6 +203,7 @@ def send_dv():
     # broadcast new DV
     broadcast_to_neighbours(msg)
 
+    # print distance_vectors
     print 'DV sent: ' + msg
 
 
@@ -216,24 +225,25 @@ def update_dv(from_node, new_dist_vector):
         toCost = new_dist_vector[to_nID]                  # cost of from_nID to to_nID
         myToCost = distance_vectors[to_nID][from_node]   # cost current node to
 
+        if to_nID in changed_nodes:
+            checksRemaining = changed_nodes[to_nID]
+            if checksRemaining == 1:
+                del changed_nodes[to_nID]
+            else:
+                changed_nodes[to_nID] -= 1
+                continue
+
         if myToCost == WEIGHT_UNKNOWN:
             distance_vectors[to_nID][from_node] = costToVia_fromNode + toCost
         elif myToCost == WEIGHT_OFFLINE:
             continue
         elif toCost == WEIGHT_OFFLINE:
             update_dv_offline_node(to_nID)
-            # distance_vectors[to_nID][from_node] = WEIGHT_OFFLINE
         else:
-            distance_vectors[to_nID][from_node] = min(myToCost, toCost + costToVia_fromNode)
+            # distance_vectors[to_nID][from_node] = min(myToCost, toCost + costToVia_fromNode)
+            distance_vectors[to_nID][from_node] = toCost + costToVia_fromNode
 
     check_update_dv_hash()
-    # dv_newHash = hash(repr(distance_vectors))
-    # timeNow = time.datetime.now()
-    # if dv_newHash != dv_hash:
-    #     dv_hash = dv_newHash
-    #     dv_timeLastChanged = timeNow
-    #     print '>>> DV updated!'
-    #     stabilized = False
 
 
 def listen_incoming_messages():
@@ -258,11 +268,14 @@ def listen_incoming_messages():
                 costTo_nID = float(msg[j+1])
                 dv[to_nID] = costTo_nID
                 j += 2
+            # print '>>> from ' + nFrom
+            # print dv
+            # print distance_vectors
             update_dv(nFrom, dv)
 
 
 def check_stabilization():
-    global stabilized
+    global stabilized, weights_changed
     threading.Timer(STABILIZATION_CHECK_INTERVAL, check_stabilization).start()
     timeNow = time.datetime.now()
     timeElapsed = timeNow - dv_timeLastChanged
@@ -270,7 +283,46 @@ def check_stabilization():
         if not stabilized:
             print '>>> Distance vectors stabilized!'
             print_shortest_path()
-            stabilized = True
+
+            if POISON_REVERSE_ENABLED and not weights_changed:
+                for neighbour in neighbours.keys():
+                    changeWeight = neighbours[neighbour]['changeWeight']
+                    currWeight = distance_vectors[neighbour][neighbour]
+                    if currWeight != changeWeight:
+                        distance_vectors[neighbour][neighbour] = changeWeight
+                        changed_nodes[neighbour] = len(neighbours)
+                check_update_dv_hash()
+                weights_changed = True
+                print '>>> weights changed'
+            else:
+                stabilized = True
+
+
+def parse_config():
+    config_file = open(CONFIG_TXT_PATH, 'r')
+    config_file_lines = config_file.readlines()
+    config_file_lines = [line.translate(None, '\n') for line in config_file_lines]  # remove \n chars from lines
+
+    now = time.datetime.now()
+    for i in range(1, len(config_file_lines)):
+        cfgLine = config_file_lines[i]
+        cfgLine = cfgLine.split()
+        neighbourChangeWeight = None
+        neighbourID = cfgLine[0]
+        neighbourWeight = float(cfgLine[1])
+
+        if POISON_REVERSE_ENABLED:
+            neighbourChangeWeight = float(cfgLine[2])
+            neighbourPort = int(cfgLine[3])
+        else:
+            neighbourPort = int(cfgLine[2])
+
+        neighbour = {'weight': neighbourWeight, 'port': neighbourPort, 'lastHeartbeat': now}
+        if POISON_REVERSE_ENABLED:
+            neighbour['changeWeight'] = neighbourChangeWeight
+
+        neighbours[neighbourID] = neighbour
+        discoveredNodes.append(neighbourID)
 
 
 if __name__ == '__main__':
@@ -286,23 +338,7 @@ if __name__ == '__main__':
             POISON_REVERSE_ENABLED = True
 
         # Parse config file
-        config_file = open(CONFIG_TXT_PATH, 'r')
-        config_file_lines = config_file.readlines()
-        config_file_lines = [line.translate(None, '\n') for line in config_file_lines]  # remove \n chars from lines
-
-        now = time.datetime.now()
-        for i in range(1, len(config_file_lines)):
-            line = config_file_lines[i]
-            line = line.split()
-            neighbourID = line[0]
-            neighbourWeight = int(line[1])
-            neighbourPort = int(line[2])
-            neighbour = {'weight': neighbourWeight, 'port': neighbourPort, 'lastHeartbeat': now}
-            neighbours[neighbourID] = neighbour
-
-            discoveredNodes.append(neighbourID)
-
-        NODE_WEIGHT = int(config_file_lines[0])
+        parse_config()
 
         # Other configurations
         HEARTBEAT_TIME = 1          # heartbeat every second
