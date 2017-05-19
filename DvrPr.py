@@ -49,7 +49,7 @@ art = \
 '''
 Dictionary to store the neighbors of this node and their properties.
 {   
-    'B': {'weight': 21, 'port': 2001},
+    'B': {'weight': 21, 'port': 2001, 'lastHeartbeat': <timeObject>},
     ...
 }
 '''
@@ -71,19 +71,65 @@ distance_vectors = {}
 # Hash of distance vectors dict to allow difference checking
 dv_hash = 0
 # time since last distance vectors dict change
-dv_timeLastChanged = None
+dv_timeLastChanged = time.datetime.now()
+
+# True if DV has stabilized
+stabilized = False
 
 
-def send_msg_to_node(nID, msg):
-    nPort = neighbours[nID]['port']
+def send_msg_to_node(node, msg):
+    nPort = neighbours[node]['port']
     nSocket = socket(AF_INET, SOCK_DGRAM)
     nSocket.sendto(msg, (SERVER_NAME, nPort))
     nSocket.close()
 
 
+# Updates the DV when one node is detected to be offline
+def update_dv_offline_node(offline_node):
+    for to_nID in distance_vectors:
+        for via_nID in distance_vectors[to_nID]:
+            if to_nID == offline_node:
+                distance_vectors[to_nID][via_nID] = WEIGHT_OFFLINE
+            elif via_nID == offline_node:
+                distance_vectors[to_nID][via_nID] = WEIGHT_OFFLINE
+
+
+def check_update_dv_hash():
+    global dv_hash, dv_timeLastChanged, stabilized
+    dv_newHash = hash(repr(distance_vectors))
+    if dv_hash != dv_newHash:
+        dv_hash = dv_newHash
+        dv_timeLastChanged = time.datetime.now()
+        print '>>> DV updated!'
+        stabilized = False
+
+
 def broadcast_to_neighbours(msg):
-    for nID in neighbours:
+    for nID in neighbours.keys():
         send_msg_to_node(nID, msg)
+
+
+def heartbeat():
+    threading.Timer(HEARTBEAT_TIME, heartbeat).start()
+    msg = 'H %s beat' % NODE_ID
+    broadcast_to_neighbours(msg)
+
+
+def heartbeat_listener():
+    while 1:
+        for nID in neighbours.keys():
+            lastBeat = neighbours[nID]['lastHeartbeat']
+            elapsedTime = time.datetime.now() - lastBeat
+            # Consider a node offline if we haven't received 10 heartbeats
+            if elapsedTime.seconds > HEARTBEAT_TIME * 10:
+                # Update dv since node is dead
+                print '>>> Node %s is offline!' % nID
+                update_dv_offline_node(nID)
+
+                # Remove node from neighbors list
+                del neighbours[nID]
+
+        check_update_dv_hash()
 
 
 def initialize_dv():
@@ -92,7 +138,7 @@ def initialize_dv():
     for to_nID in discoveredNodes:
         distance_vectors[to_nID] = {}
         for via_nID in discoveredNodes:
-            distance_vectors[to_nID][via_nID] = float('inf')
+            distance_vectors[to_nID][via_nID] = WEIGHT_UNKNOWN
 
     for nID in neighbours:
         distance_vectors[nID][nID] = neighbours[nID]['weight']
@@ -100,22 +146,30 @@ def initialize_dv():
     dv_hash = hash(repr(distance_vectors))
     dv_timeLastChanged = time.datetime.now()
 
+    print '>>> DV init:'
+    print distance_vectors
+
 
 def print_shortest_path():
-    for nID in discoveredNodes:
+    for nID in distance_vectors:
         msg = 'shortest path to node %s:' % nID
         nextHop = ''
         cost = float('inf')
         for via_nID in distance_vectors[nID]:
             viaCost = distance_vectors[nID][via_nID]
+            if viaCost == WEIGHT_UNKNOWN:
+                continue
+
             if viaCost < cost:
                 nextHop = via_nID
                 cost = viaCost
-        print '%s the next hop is %s and the cost is %d' % (msg, nextHop, cost)
+
+        if cost != WEIGHT_OFFLINE:
+            print '%s the next hop is %s and the cost is %.1f' % (msg, nextHop, cost)
 
 
-def send_DV():
-    threading.Timer(DV_UPDATE_TIME, send_DV).start()
+def send_dv():
+    threading.Timer(DV_UPDATE_TIME, send_dv).start()
     vectorToSend = {}
     msg = 'DV %s' % NODE_ID
 
@@ -124,13 +178,19 @@ def send_DV():
         viaWeights = distance_vectors[to_nID]
 
         for via_nID in viaWeights:
-            minWeight = min(minWeight, viaWeights[via_nID])
+            via_weight = viaWeights[via_nID]
+            if via_weight == WEIGHT_UNKNOWN:
+                continue
+            elif via_weight == WEIGHT_OFFLINE:
+                minWeight = WEIGHT_OFFLINE
+            else:
+                minWeight = min(minWeight, viaWeights[via_nID])
 
         vectorToSend[to_nID] = minWeight
 
     # craft msg
     for to_nID in vectorToSend:
-        msg += ' %s %d' % (to_nID, vectorToSend[to_nID])
+        msg += ' %s %.1f' % (to_nID, vectorToSend[to_nID])
 
     # broadcast new DV
     broadcast_to_neighbours(msg)
@@ -138,11 +198,11 @@ def send_DV():
     print 'DV sent: ' + msg
 
 
-def updateDV(from_nID, newDistVector):
-    global dv_hash, dv_timeLastChanged
+def update_dv(from_node, new_dist_vector):
+    global dv_hash, dv_timeLastChanged, stabilized
 
-    costToVia_fromNode = distance_vectors[from_nID][from_nID] # cost to fromNode via fromNode
-    for to_nID in newDistVector:
+    costToVia_fromNode = distance_vectors[from_node][from_node]  # cost to fromNode via fromNode
+    for to_nID in new_dist_vector:
         if to_nID == NODE_ID:
             continue
 
@@ -151,31 +211,29 @@ def updateDV(from_nID, newDistVector):
             discoveredNodes.append(to_nID)
 
             for via_nID in discoveredNodes:
-                distance_vectors[to_nID][via_nID] = float('inf')
+                distance_vectors[to_nID][via_nID] = WEIGHT_UNKNOWN
 
-        toCost = newDistVector[to_nID]                  # cost of from_nID to to_nID
-        myToCost = distance_vectors[to_nID][from_nID]   # cost current node to
+        toCost = new_dist_vector[to_nID]                  # cost of from_nID to to_nID
+        myToCost = distance_vectors[to_nID][from_node]   # cost current node to
 
-        distance_vectors[to_nID][from_nID] = min(myToCost, toCost + costToVia_fromNode)
+        if myToCost == WEIGHT_UNKNOWN:
+            distance_vectors[to_nID][from_node] = costToVia_fromNode + toCost
+        elif myToCost == WEIGHT_OFFLINE:
+            continue
+        elif toCost == WEIGHT_OFFLINE:
+            update_dv_offline_node(to_nID)
+            # distance_vectors[to_nID][from_node] = WEIGHT_OFFLINE
+        else:
+            distance_vectors[to_nID][from_node] = min(myToCost, toCost + costToVia_fromNode)
 
-    dv_newHash = hash(repr(distance_vectors))
-    now = time.datetime.now()
-    if dv_newHash != dv_hash:
-        dv_hash = dv_newHash
-        dv_timeLastChanged = now
-        print '>>> DV updated!'
-    else:
-        timeElapsed = now - dv_timeLastChanged
-        if timeElapsed.seconds > STABILIZATION_TIME:
-            print '>>> Distance vectors stabilized!'
-            print_shortest_path()
-
-
-def heartbeat():
-    threading.Timer(HEARTBEAT_TIME, heartbeat).start()
-    for nID in neighbours:
-        msg = 'H %s beat' % NODE_ID
-        send_msg_to_node(nID, msg)
+    check_update_dv_hash()
+    # dv_newHash = hash(repr(distance_vectors))
+    # timeNow = time.datetime.now()
+    # if dv_newHash != dv_hash:
+    #     dv_hash = dv_newHash
+    #     dv_timeLastChanged = timeNow
+    #     print '>>> DV updated!'
+    #     stabilized = False
 
 
 def listen_incoming_messages():
@@ -184,20 +242,35 @@ def listen_incoming_messages():
     print 'Listener initialized.'
     while 1:
         msg, _ = nListener.recvfrom(2048)
-        msgType = msg.split()[0]
+        msg = msg.split()
+        msgType = msg[0]
         if msgType == 'H':
-            continue #TODO
+            fromBeat = msg[1]
+            timeNow = time.datetime.now()
+            neighbours[fromBeat]['lastHeartbeat'] = timeNow
+
         elif msgType == 'DV':
             dv = {}
-            msg = msg.split()
             nFrom = msg[1]
-            i = 2
-            while i < len(msg):
-                to_nID = msg[i]
-                costTo_nID = int(msg[i+1])
+            j = 2
+            while j < len(msg):
+                to_nID = msg[j]
+                costTo_nID = float(msg[j+1])
                 dv[to_nID] = costTo_nID
-                i += 2
-            updateDV(nFrom, dv)
+                j += 2
+            update_dv(nFrom, dv)
+
+
+def check_stabilization():
+    global stabilized
+    threading.Timer(STABILIZATION_CHECK_INTERVAL, check_stabilization).start()
+    timeNow = time.datetime.now()
+    timeElapsed = timeNow - dv_timeLastChanged
+    if timeElapsed.seconds > STABILIZATION_TIME:
+        if not stabilized:
+            print '>>> Distance vectors stabilized!'
+            print_shortest_path()
+            stabilized = True
 
 
 if __name__ == '__main__':
@@ -215,15 +288,16 @@ if __name__ == '__main__':
         # Parse config file
         config_file = open(CONFIG_TXT_PATH, 'r')
         config_file_lines = config_file.readlines()
-        config_file_lines = [line.translate(None, '\n') for line in config_file_lines] # remove \n chars from lines
+        config_file_lines = [line.translate(None, '\n') for line in config_file_lines]  # remove \n chars from lines
 
+        now = time.datetime.now()
         for i in range(1, len(config_file_lines)):
             line = config_file_lines[i]
             line = line.split()
             neighbourID = line[0]
             neighbourWeight = int(line[1])
             neighbourPort = int(line[2])
-            neighbour = {'weight': neighbourWeight, 'port': neighbourPort}
+            neighbour = {'weight': neighbourWeight, 'port': neighbourPort, 'lastHeartbeat': now}
             neighbours[neighbourID] = neighbour
 
             discoveredNodes.append(neighbourID)
@@ -231,16 +305,26 @@ if __name__ == '__main__':
         NODE_WEIGHT = int(config_file_lines[0])
 
         # Other configurations
-        HEARTBEAT_TIME = 1      # heartbeat every second
-        DV_UPDATE_TIME = 5      # send DV update every 5 seconds
-        STABILIZATION_TIME = 20 # if DV table didn't change after 20s, then assume stabilization
+        HEARTBEAT_TIME = 1          # heartbeat every second
+        DV_UPDATE_TIME = 5          # send DV update every 5 seconds
+        STABILIZATION_CHECK_INTERVAL = 1    # check if DV has stabilized every second
+        STABILIZATION_TIME = 20     # if DV table didn't change after 20s, then assume stabilization
+        WEIGHT_UNKNOWN = -1.0       # code for an unknown weight
+        WEIGHT_OFFLINE = float('inf')   # code for an offline node
         SERVER_NAME = 'localhost'
 
         print art % NODE_ID
         initialize_dv()
 
-        listener_thread = threading.Thread(target=listen_incoming_messages)
-        listener_thread.start()
+        # Start listening for messages
+        threading.Thread(target=listen_incoming_messages).start()
 
-        heartbeat() # start heartbeat
-        send_DV() # start distance vector broadcasting
+        # Start heartbeat transmitter and listener
+        heartbeat()
+        threading.Thread(target=heartbeat_listener).start()
+
+        # Start distance vector broadcasting
+        send_dv()
+
+        # start check for stabilization thread
+        check_stabilization()
