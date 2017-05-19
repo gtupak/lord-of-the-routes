@@ -80,9 +80,8 @@ stabilized = False
 # True if weights have already been changed
 weights_changed = False
 
-# List of nodes that have changed weights and their remaining checks. Ie. if node has 2 neighbours, there are 2 checks
-# The checks is to handle the problem of weight updates that are not at the same time.
-changed_nodes = {}
+# List of nodes that have changed weights and their remaining checks.
+nodes_increased_weight = []
 
 
 def send_msg_to_node(node, msg):
@@ -158,19 +157,36 @@ def initialize_dv():
     print distance_vectors
 
 
-def print_shortest_path():
-    for nID in distance_vectors:
-        msg = 'shortest path to node %s:' % nID
-        nextHop = ''
-        cost = float('inf')
-        for via_nID in distance_vectors[nID]:
-            viaCost = distance_vectors[nID][via_nID]
-            if viaCost == WEIGHT_UNKNOWN:
-                continue
+# Returns the via node to go to to_node and the weight
+def get_via_node(to_node):
+    optimalNode = ''
+    minWeight = WEIGHT_OFFLINE
+    for viaNode in distance_vectors[to_node]:
+        viaWeight = distance_vectors[to_node][viaNode]
+        if viaWeight != WEIGHT_POISON and viaWeight != WEIGHT_OFFLINE and viaWeight != WEIGHT_UNKNOWN:
+            if viaWeight < minWeight:
+                minWeight = viaWeight
+                optimalNode = viaNode
+    return optimalNode, minWeight
 
-            if viaCost < cost:
-                nextHop = via_nID
-                cost = viaCost
+
+def print_shortest_path():
+    for to_nID in distance_vectors:
+        msg = 'shortest path to node %s:' % to_nID
+        cost = WEIGHT_OFFLINE
+
+        nextHop, cost = get_via_node(to_nID)
+
+        # nextHop = ''
+        # cost = float('inf')
+        # for via_nID in distance_vectors[to_nID]:
+        #     viaCost = distance_vectors[to_nID][via_nID]
+        #     if viaCost == WEIGHT_UNKNOWN:
+        #         continue
+        #
+        #     if viaCost < cost:
+        #         nextHop = via_nID
+        #         cost = viaCost
 
         if cost != WEIGHT_OFFLINE:
             print '%s the next hop is %s and the cost is %.1f' % (msg, nextHop, cost)
@@ -179,36 +195,52 @@ def print_shortest_path():
 def send_dv():
     threading.Timer(DV_UPDATE_TIME, send_dv).start()
     vectorToSend = {}
-    msg = 'DV %s' % NODE_ID
+    minToViaDict = {}
 
     for to_nID in distance_vectors:
-        minWeight = float('inf')
-        viaWeights = distance_vectors[to_nID]
+        # minWeight = float('inf')
+        # viaWeights = distance_vectors[to_nID]
+        # minToVia[to_nID] = ''
 
-        for via_nID in viaWeights:
-            via_weight = viaWeights[via_nID]
-            if via_weight == WEIGHT_UNKNOWN:
-                continue
-            elif via_weight == WEIGHT_OFFLINE:
-                minWeight = WEIGHT_OFFLINE
-            else:
-                minWeight = min(minWeight, viaWeights[via_nID])
+        minToVia, minWeight = get_via_node(to_nID)
+        minToViaDict[to_nID] = minToVia
+
+        # for via_nID in viaWeights:
+        #     via_weight = viaWeights[via_nID]
+        #     if via_weight == WEIGHT_UNKNOWN:
+        #         continue
+        #     elif via_weight == WEIGHT_OFFLINE:
+        #         minWeight = WEIGHT_OFFLINE
+        #     elif viaWeights[via_nID] < minWeight:
+        #         minToVia[to_nID] = via_nID
+        #         minWeight = viaWeights[via_nID]
+        #         # minWeight = min(minWeight, viaWeights[via_nID])
 
         vectorToSend[to_nID] = minWeight
+    # print 'vector to send: ' + repr(vectorToSend)
 
-    # craft msg
-    for to_nID in vectorToSend:
-        msg += ' %s %.1f' % (to_nID, vectorToSend[to_nID])
+    # craft msg & broadcast to neighbours
+    for nID in neighbours.keys():
+        msg = 'DV %s' % NODE_ID
+        for to_nID in vectorToSend:
+            if to_nID == nID:
+                continue
+            elif minToViaDict[to_nID] == nID:
+                msg += ' %s %.1f' % (to_nID, WEIGHT_POISON)
+            else:
+                msg += ' %s %.1f' % (to_nID, vectorToSend[to_nID])
+        send_msg_to_node(nID, msg)
+        # print 'Sent to %s: %s' % (nID, msg)
 
-    # broadcast new DV
-    broadcast_to_neighbours(msg)
+        # broadcast new DV
+    # broadcast_to_neighbours(msg)
 
     # print distance_vectors
-    print 'DV sent: ' + msg
 
 
 def update_dv(from_node, new_dist_vector):
     global dv_hash, dv_timeLastChanged, stabilized
+    # print '######### %s: %s' % (from_node, repr(new_dist_vector))
 
     costToVia_fromNode = distance_vectors[from_node][from_node]  # cost to fromNode via fromNode
     for to_nID in new_dist_vector:
@@ -225,13 +257,13 @@ def update_dv(from_node, new_dist_vector):
         toCost = new_dist_vector[to_nID]                  # cost of from_nID to to_nID
         myToCost = distance_vectors[to_nID][from_node]   # cost current node to
 
-        if to_nID in changed_nodes:
-            checksRemaining = changed_nodes[to_nID]
-            if checksRemaining == 1:
-                del changed_nodes[to_nID]
-            else:
-                changed_nodes[to_nID] -= 1
-                continue
+        # if to_nID in changed_nodes:
+        #     checksRemaining = changed_nodes[to_nID]
+        #     if checksRemaining == 1:
+        #         del changed_nodes[to_nID]
+        #     else:
+        #         changed_nodes[to_nID] -= 1
+        #         continue
 
         if myToCost == WEIGHT_UNKNOWN:
             distance_vectors[to_nID][from_node] = costToVia_fromNode + toCost
@@ -239,6 +271,8 @@ def update_dv(from_node, new_dist_vector):
             continue
         elif toCost == WEIGHT_OFFLINE:
             update_dv_offline_node(to_nID)
+        elif toCost == WEIGHT_POISON:
+            distance_vectors[to_nID][from_node] = WEIGHT_POISON
         else:
             # distance_vectors[to_nID][from_node] = min(myToCost, toCost + costToVia_fromNode)
             distance_vectors[to_nID][from_node] = toCost + costToVia_fromNode
@@ -281,21 +315,42 @@ def check_stabilization():
     timeElapsed = timeNow - dv_timeLastChanged
     if timeElapsed.seconds > STABILIZATION_TIME:
         if not stabilized:
-            print '>>> Distance vectors stabilized!'
-            print_shortest_path()
-
             if POISON_REVERSE_ENABLED and not weights_changed:
+                print 'Changing weights...'
+                # print_shortest_path()
+
+                # print 'Before changing weights: %s' % repr(distance_vectors)
+
                 for neighbour in neighbours.keys():
                     changeWeight = neighbours[neighbour]['changeWeight']
                     currWeight = distance_vectors[neighbour][neighbour]
                     if currWeight != changeWeight:
+                        nodes_increased_weight.append(neighbour)
                         distance_vectors[neighbour][neighbour] = changeWeight
-                        changed_nodes[neighbour] = len(neighbours)
+                        # changed_nodes[neighbour] = len(neighbours)
                 check_update_dv_hash()
                 weights_changed = True
-                print '>>> weights changed'
+                # print '>>> Weights changed: %s' % repr(distance_vectors)
             else:
+                print '>>> Distance vectors stabilized!'
+                print_shortest_path()
                 stabilized = True
+
+
+
+            # if POISON_REVERSE_ENABLED and not weights_changed:
+                # for neighbour in neighbours.keys():
+                #     changeWeight = neighbours[neighbour]['changeWeight']
+                #     currWeight = distance_vectors[neighbour][neighbour]
+                #     if currWeight != changeWeight:
+                #         nodes_increased_weight.append(neighbour)
+                #         # distance_vectors[neighbour][neighbour] = changeWeight
+                #         # changed_nodes[neighbour] = len(neighbours)
+                # check_update_dv_hash()
+                # weights_changed = True
+                # print '>>> weights changed'
+            # else:
+            #     stabilized = True
 
 
 def parse_config():
@@ -347,6 +402,7 @@ if __name__ == '__main__':
         STABILIZATION_TIME = 20     # if DV table didn't change after 20s, then assume stabilization
         WEIGHT_UNKNOWN = -1.0       # code for an unknown weight
         WEIGHT_OFFLINE = float('inf')   # code for an offline node
+        WEIGHT_POISON = -2.0     # code when a weight has increased
         SERVER_NAME = 'localhost'
 
         print art % NODE_ID
