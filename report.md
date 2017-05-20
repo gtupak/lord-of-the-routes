@@ -25,7 +25,12 @@ The program first starts by parsing the command line arguments, then loading the
 
 To check if the distance vectors have stabilized, the following method is employed. First, a global variables `STABILIZATION_TIME = 10` and `STABILIZATION_CHECK_INTERVAL = 1` are set. Then, a thread is dispatched, checking for stabilization every (`STABILIZATION_CHECK_INTERVAL`) second. It is important to note, that at every point in time, we keep track of a dictionary of distance vectors, a time when it was last changed and its hash. Every time there's a potential change, a function is ran that computes a new hash of the string representation of the dictionary and compares it with the existing hash. If the values are different, then it means that the distance vectors have been changed and its hash and last time changed variables must be updated.
 
+## Assumptions
+
+During the execution of this program, we assume that the configuration files will be have the right format depending on the presence of the *-p* flag.
+
 ## Borrowed code
 
 As a foundation, I started my program with the UDP example provided from the class' material.
+
 

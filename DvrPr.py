@@ -3,7 +3,8 @@
 import sys
 from socket import *
 import threading
-import datetime as time
+import datetime as dateTime
+import time
 
 art = \
 " ___________________        ____....-----....____\n\
@@ -39,7 +40,7 @@ distance_vectors = {}
 # Hash of distance vectors dict to allow difference checking
 dv_hash = 0
 # time since last distance vectors dict change
-dv_timeLastChanged = time.datetime.now()
+dv_timeLastChanged = dateTime.datetime.now()
 
 # True if DV has stabilized
 stabilized = False
@@ -73,7 +74,7 @@ def check_update_dv_hash():
     dv_newHash = hash(repr(distance_vectors))
     if dv_hash != dv_newHash:
         dv_hash = dv_newHash
-        dv_timeLastChanged = time.datetime.now()
+        dv_timeLastChanged = dateTime.datetime.now()
         print '>>> DV updated!'
         stabilized = False
 
@@ -84,16 +85,18 @@ def broadcast_to_neighbours(msg):
 
 
 def heartbeat():
-    threading.Timer(HEARTBEAT_TIME, heartbeat).start()
+    thread = threading.Timer(HEARTBEAT_TIME, heartbeat)
+    thread.daemon = True
+    thread.start()
     msg = 'H %s beat' % NODE_ID
     broadcast_to_neighbours(msg)
 
 
 def heartbeat_listener():
-    while 1:
+    while True:
         for nID in neighbours.keys():
             lastBeat = neighbours[nID]['lastHeartbeat']
-            elapsedTime = time.datetime.now() - lastBeat
+            elapsedTime = dateTime.datetime.now() - lastBeat
             # Consider a node offline if we haven't received 10 heartbeats
             if elapsedTime.seconds > HEARTBEAT_TIME * 10:
                 # Update dv since node is dead
@@ -118,7 +121,7 @@ def initialize_dv():
         distance_vectors[nID][nID] = neighbours[nID]['weight']
 
     dv_hash = hash(repr(distance_vectors))
-    dv_timeLastChanged = time.datetime.now()
+    dv_timeLastChanged = dateTime.datetime.now()
 
 
 # Returns the via node to go to to_node and the weight
@@ -143,7 +146,9 @@ def print_shortest_path():
 
 
 def send_dv():
-    threading.Timer(DV_UPDATE_TIME, send_dv).start()
+    thread = threading.Timer(DV_UPDATE_TIME, send_dv)
+    thread.daemon = True
+    thread.start()
     vectorToSend = {}
     minToViaDict = {}
 
@@ -202,13 +207,13 @@ def listen_incoming_messages():
     nListener = socket(AF_INET, SOCK_DGRAM)
     nListener.bind(('', NODE_PORT))
     print 'Node is ready to receive incoming messages...'
-    while 1:
+    while True:
         msg, _ = nListener.recvfrom(2048)
         msg = msg.split()
         msgType = msg[0]
         if msgType == 'H':
             fromBeat = msg[1]
-            timeNow = time.datetime.now()
+            timeNow = dateTime.datetime.now()
             neighbours[fromBeat]['lastHeartbeat'] = timeNow
 
         elif msgType == 'DV':
@@ -226,8 +231,10 @@ def listen_incoming_messages():
 
 def check_stabilization():
     global stabilized, weights_changed
-    threading.Timer(STABILIZATION_CHECK_INTERVAL, check_stabilization).start()
-    timeNow = time.datetime.now()
+    thread = threading.Timer(STABILIZATION_CHECK_INTERVAL, check_stabilization)
+    thread.daemon = True
+    thread.start()
+    timeNow = dateTime.datetime.now()
     timeElapsed = timeNow - dv_timeLastChanged
     if timeElapsed.seconds > STABILIZATION_TIME:
         if not stabilized:
@@ -259,7 +266,7 @@ def parse_config():
     config_file_lines = config_file.readlines()
     config_file_lines = [line.translate(None, '\n') for line in config_file_lines]  # remove \n chars from lines
 
-    now = time.datetime.now()
+    now = dateTime.datetime.now()
     for i in range(1, len(config_file_lines)):
         cfgLine = config_file_lines[i]
         cfgLine = cfgLine.split()
@@ -310,14 +317,24 @@ if __name__ == '__main__':
         initialize_dv()
 
         # Start listening for messages
-        threading.Thread(target=listen_incoming_messages).start()
+        listenThread = threading.Thread(target=listen_incoming_messages)
+        listenThread.daemon = True
+        listenThread.start()
 
         # Start heartbeat transmitter and listener
         heartbeat()
-        threading.Thread(target=heartbeat_listener).start()
+        heartThread = threading.Thread(target=heartbeat_listener)
+        heartThread.daemon = True
+        heartThread.start()
 
         # Start distance vector broadcasting
         send_dv()
 
         # start check for stabilization thread
         check_stabilization()
+
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print 'Node %s is shut down.' % NODE_ID
