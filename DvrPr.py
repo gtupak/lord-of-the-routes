@@ -1,38 +1,5 @@
 # Using python2.7
 
-# noinspection PyByteLiteral
-'''
-cmd line args:
-
-NODE_ID, 
-the ID for this node (i.e. router). This argument must be a single uppercase alphabet (e.g.: A, B, etc.).
-
-NODE_PORT, 
-the port number on which this node will send and receive packets from its neighbours.
-
-CONFIG.TXT, 
-this file will contain the costs to the neighbouring nodes. 
-It will also contain the port number on which each neighbour is waiting for routing packets. 
-An example of this file is provided below:
-2           nr of neighbors
-B 5 2001    <neighbor ID> <cost to reach this neighbor> <port of the neighbor>
-C 7 2002
-
-POISONED REVERSE FLAG (-p), 
-this is an optional argument, which is used to turn on/off Poisoned reverse. 
-This means that your program should accept either 3 or 4 arguments. 
-If the -p flag is present in the argument list then poisoned reverse should be employed in the routing protocol. 
-If this flag is absent then only basic distance vector should be used.
-
-to run: 
-python DvrPr.py A 2000 config.txt -p
-
-Eventually print final routing table. ex:
-
-Shortest path to node B: the next hop is D and the cost is 10
-Shortest path to node C: the next hop is B and the cost is 11.5
-'''
-
 import sys
 from socket import *
 import threading
@@ -141,7 +108,7 @@ def heartbeat_listener():
 
 def initialize_dv():
     global dv_hash, dv_timeLastChanged
-    print 'Initializing distance vectors.'
+    # print 'Initializing distance vectors.'
     for to_nID in discoveredNodes:
         distance_vectors[to_nID] = {}
         for via_nID in discoveredNodes:
@@ -152,9 +119,6 @@ def initialize_dv():
 
     dv_hash = hash(repr(distance_vectors))
     dv_timeLastChanged = time.datetime.now()
-
-    print '>>> DV init:'
-    print distance_vectors
 
 
 # Returns the via node to go to to_node and the weight
@@ -173,21 +137,7 @@ def get_via_node(to_node):
 def print_shortest_path():
     for to_nID in distance_vectors:
         msg = 'shortest path to node %s:' % to_nID
-        cost = WEIGHT_OFFLINE
-
         nextHop, cost = get_via_node(to_nID)
-
-        # nextHop = ''
-        # cost = float('inf')
-        # for via_nID in distance_vectors[to_nID]:
-        #     viaCost = distance_vectors[to_nID][via_nID]
-        #     if viaCost == WEIGHT_UNKNOWN:
-        #         continue
-        #
-        #     if viaCost < cost:
-        #         nextHop = via_nID
-        #         cost = viaCost
-
         if cost != WEIGHT_OFFLINE:
             print '%s the next hop is %s and the cost is %.1f' % (msg, nextHop, cost)
 
@@ -198,26 +148,10 @@ def send_dv():
     minToViaDict = {}
 
     for to_nID in distance_vectors:
-        # minWeight = float('inf')
-        # viaWeights = distance_vectors[to_nID]
-        # minToVia[to_nID] = ''
-
         minToVia, minWeight = get_via_node(to_nID)
         minToViaDict[to_nID] = minToVia
 
-        # for via_nID in viaWeights:
-        #     via_weight = viaWeights[via_nID]
-        #     if via_weight == WEIGHT_UNKNOWN:
-        #         continue
-        #     elif via_weight == WEIGHT_OFFLINE:
-        #         minWeight = WEIGHT_OFFLINE
-        #     elif viaWeights[via_nID] < minWeight:
-        #         minToVia[to_nID] = via_nID
-        #         minWeight = viaWeights[via_nID]
-        #         # minWeight = min(minWeight, viaWeights[via_nID])
-
         vectorToSend[to_nID] = minWeight
-    # print 'vector to send: ' + repr(vectorToSend)
 
     # craft msg & broadcast to neighbours
     for nID in neighbours.keys():
@@ -225,22 +159,15 @@ def send_dv():
         for to_nID in vectorToSend:
             if to_nID == nID:
                 continue
-            elif minToViaDict[to_nID] == nID:
+            elif minToViaDict[to_nID] == nID and POISON_REVERSE_ENABLED:
                 msg += ' %s %.1f' % (to_nID, WEIGHT_POISON)
             else:
                 msg += ' %s %.1f' % (to_nID, vectorToSend[to_nID])
         send_msg_to_node(nID, msg)
-        # print 'Sent to %s: %s' % (nID, msg)
-
-        # broadcast new DV
-    # broadcast_to_neighbours(msg)
-
-    # print distance_vectors
 
 
 def update_dv(from_node, new_dist_vector):
     global dv_hash, dv_timeLastChanged, stabilized
-    # print '######### %s: %s' % (from_node, repr(new_dist_vector))
 
     costToVia_fromNode = distance_vectors[from_node][from_node]  # cost to fromNode via fromNode
     for to_nID in new_dist_vector:
@@ -257,14 +184,6 @@ def update_dv(from_node, new_dist_vector):
         toCost = new_dist_vector[to_nID]                  # cost of from_nID to to_nID
         myToCost = distance_vectors[to_nID][from_node]   # cost current node to
 
-        # if to_nID in changed_nodes:
-        #     checksRemaining = changed_nodes[to_nID]
-        #     if checksRemaining == 1:
-        #         del changed_nodes[to_nID]
-        #     else:
-        #         changed_nodes[to_nID] -= 1
-        #         continue
-
         if myToCost == WEIGHT_UNKNOWN:
             distance_vectors[to_nID][from_node] = costToVia_fromNode + toCost
         elif myToCost == WEIGHT_OFFLINE:
@@ -274,7 +193,6 @@ def update_dv(from_node, new_dist_vector):
         elif toCost == WEIGHT_POISON:
             distance_vectors[to_nID][from_node] = WEIGHT_POISON
         else:
-            # distance_vectors[to_nID][from_node] = min(myToCost, toCost + costToVia_fromNode)
             distance_vectors[to_nID][from_node] = toCost + costToVia_fromNode
 
     check_update_dv_hash()
@@ -283,7 +201,7 @@ def update_dv(from_node, new_dist_vector):
 def listen_incoming_messages():
     nListener = socket(AF_INET, SOCK_DGRAM)
     nListener.bind(('', NODE_PORT))
-    print 'Listener initialized.'
+    print 'Node is ready to receive incoming messages...'
     while 1:
         msg, _ = nListener.recvfrom(2048)
         msg = msg.split()
@@ -302,9 +220,7 @@ def listen_incoming_messages():
                 costTo_nID = float(msg[j+1])
                 dv[to_nID] = costTo_nID
                 j += 2
-            # print '>>> from ' + nFrom
-            # print dv
-            # print distance_vectors
+
             update_dv(nFrom, dv)
 
 
@@ -316,41 +232,26 @@ def check_stabilization():
     if timeElapsed.seconds > STABILIZATION_TIME:
         if not stabilized:
             if POISON_REVERSE_ENABLED and not weights_changed:
+                print 'Stabilized!'
+                print_shortest_path()
+
                 print 'Changing weights...'
-                # print_shortest_path()
-
-                # print 'Before changing weights: %s' % repr(distance_vectors)
-
                 for neighbour in neighbours.keys():
                     changeWeight = neighbours[neighbour]['changeWeight']
                     currWeight = distance_vectors[neighbour][neighbour]
                     if currWeight != changeWeight:
                         nodes_increased_weight.append(neighbour)
                         distance_vectors[neighbour][neighbour] = changeWeight
-                        # changed_nodes[neighbour] = len(neighbours)
                 check_update_dv_hash()
                 weights_changed = True
-                # print '>>> Weights changed: %s' % repr(distance_vectors)
             else:
                 print '>>> Distance vectors stabilized!'
                 print_shortest_path()
                 stabilized = True
-
-
-
-            # if POISON_REVERSE_ENABLED and not weights_changed:
-                # for neighbour in neighbours.keys():
-                #     changeWeight = neighbours[neighbour]['changeWeight']
-                #     currWeight = distance_vectors[neighbour][neighbour]
-                #     if currWeight != changeWeight:
-                #         nodes_increased_weight.append(neighbour)
-                #         # distance_vectors[neighbour][neighbour] = changeWeight
-                #         # changed_nodes[neighbour] = len(neighbours)
-                # check_update_dv_hash()
-                # weights_changed = True
-                # print '>>> weights changed'
-            # else:
-            #     stabilized = True
+    else:
+        remaining = STABILIZATION_TIME - timeElapsed.seconds
+        if remaining % 5 == 0:
+            print '%d seconds until stabilization...' % remaining
 
 
 def parse_config():
@@ -397,12 +298,12 @@ if __name__ == '__main__':
 
         # Other configurations
         HEARTBEAT_TIME = 1          # heartbeat every second
-        DV_UPDATE_TIME = 5          # send DV update every 5 seconds
+        DV_UPDATE_TIME = 3          # send DV update every 3 seconds
         STABILIZATION_CHECK_INTERVAL = 1    # check if DV has stabilized every second
-        STABILIZATION_TIME = 20     # if DV table didn't change after 20s, then assume stabilization
+        STABILIZATION_TIME = 10     # if DV table didn't change after 20s, then assume stabilization
         WEIGHT_UNKNOWN = -1.0       # code for an unknown weight
         WEIGHT_OFFLINE = float('inf')   # code for an offline node
-        WEIGHT_POISON = -2.0     # code when a weight has increased
+        WEIGHT_POISON = -2.0    # code when a weight has increased
         SERVER_NAME = 'localhost'
 
         print art % NODE_ID
